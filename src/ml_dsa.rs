@@ -537,28 +537,14 @@ pub(crate) fn private_to_public_key<const K: usize, const L: usize>(
         T(core::array::from_fn(|n| mont_reduce(i64::from(s_2_hat_mont[k].0[n]))))
     }));
     // correct each coeff such that they are centered around 0
-    let s_2: [R; K] = core::array::from_fn(|k| {
-        R(core::array::from_fn(|n| {
-            if s_2[k].0[n] > (Q / 2) {
-                s_2[k].0[n] - Q
-            } else {
-                s_2[k].0[n]
-            }
-        }))
-    });
+    let s_2: [R; K] =
+        core::array::from_fn(|k| R(core::array::from_fn(|n| center_mod(s_2[k].0[n]))));
 
     let t_0: [R; K] = inv_ntt(&core::array::from_fn(|k| {
         T(core::array::from_fn(|n| mont_reduce(i64::from(t_0_hat_mont[k].0[n]))))
     }));
-    let sk_t_0: [R; K] = core::array::from_fn(|k| {
-        R(core::array::from_fn(|n| {
-            if t_0[k].0[n] > (Q / 2) {
-                t_0[k].0[n] - Q
-            } else {
-                t_0[k].0[n]
-            }
-        }))
-    });
+    let sk_t_0: [R; K] =
+        core::array::from_fn(|k| R(core::array::from_fn(|n| center_mod(t_0[k].0[n]))));
 
     // 5: t ← NTT−1(cap_a_hat ◦ NTT(s_1)) + s_2    ▷ Compute t = As1 + s2
     let t: [R; K] = {

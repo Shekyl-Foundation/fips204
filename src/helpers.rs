@@ -134,10 +134,16 @@ pub(crate) fn add_vector_ntt<const K: usize>(v_hat: &[R; K], w_hat: &[R; K]) -> 
 
 #[allow(clippy::cast_possible_truncation)] // as i32
 pub(crate) fn to_mont<const L: usize>(vec_a: &[T; L]) -> [T; L] {
-    core::array::from_fn(|l| {
-        T(core::array::from_fn(|n| partial_reduce64(i64::from(vec_a[l].0[n]) << 32)))
-    })
+    core::array::from_fn(|l| T(core::array::from_fn(|n| to_mont_coefficient(vec_a[l].0[n]))))
 }
+
+
+/// One coefficient into Montgomery form.
+///
+/// An NTT output is up to `|w_0| + 8 * Q` in magnitude, and with `|w_0| <= 2^19` that exceeds the
+/// input range of `partial_reduce64`. So it is first reduced below `Q`. The result is congruent
+/// to the same value and below `2 * Q`.
+fn to_mont_coefficient(a: i32) -> i32 { partial_reduce64(i64::from(partial_reduce32(a)) << 32) }
 
 
 /// The largest absolute value of the centered coefficients of `w`.
@@ -268,6 +274,28 @@ mod tests {
                 *coefficient = value / 2;
             }
             check(&w);
+        }
+    }
+
+    // The secret-key encoders centred with a branch; `center_mod` does it with a mask.
+    #[test]
+    fn center_mod_centres_every_canonical_coefficient() {
+        for x in 0..Q {
+            assert_eq!(center_mod(x), if x > Q / 2 { x - Q } else { x }, "center_mod({x})");
+        }
+    }
+
+    // Every value an NTT output can hold: |w_0| <= 2^19, plus Q per layer, and more.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "walks every NTT output; run with --release -- --ignored"]
+    fn to_mont_coefficient_is_in_range_on_every_ntt_output() {
+        let limit = (1 << 19) + 9 * Q;
+        for a in -limit..=limit {
+            let result = to_mont_coefficient(a);
+            assert!(result.abs() < 2 * Q, "to_mont({a}) = {result}");
+            let expected = (i64::from(a) << 32).rem_euclid(i64::from(Q));
+            assert_eq!(i64::from(result).rem_euclid(i64::from(Q)), expected, "to_mont({a})");
         }
     }
 

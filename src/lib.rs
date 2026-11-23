@@ -564,7 +564,7 @@ macro_rules! functionality {
                 let s_1: [types::R; L] =
                     core::array::from_fn(|l|
                         types::R(core::array::from_fn(|n|
-                            if s_1[l].0[n] > (Q / 2) {s_1[l].0[n] - Q} else {s_1[l].0[n]})));
+                            helpers::center_mod(s_1[l].0[n]))));
 
                 let s_2: [types::R; K] = ntt::inv_ntt(
                     &core::array::from_fn(|k|
@@ -573,7 +573,7 @@ macro_rules! functionality {
                 let s_2: [types::R; K] =
                     core::array::from_fn(|k|
                         types::R(core::array::from_fn(|n|
-                            if s_2[k].0[n] > (Q / 2) {s_2[k].0[n] - Q} else {s_2[k].0[n]})));
+                            helpers::center_mod(s_2[k].0[n]))));
 
 
                 let t_0: [types::R; K] = ntt::inv_ntt(
@@ -583,7 +583,7 @@ macro_rules! functionality {
                 let t_0: [types::R; K] =
                     core::array::from_fn(|k|
                         types::R(core::array::from_fn(|n|
-                            if t_0[k].0[n] > (Q / 2) {t_0[k].0[n] - Q} else {t_0[k].0[n]})));
+                            helpers::center_mod(t_0[k].0[n]))));
 
                 // Encode and return
                 encodings::sk_encode::<K, L, SK_LEN>(ETA, rho, cap_k, tr, &s_1, &s_2, &t_0)
