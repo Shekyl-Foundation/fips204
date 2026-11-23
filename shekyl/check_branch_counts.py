@@ -41,7 +41,11 @@ HELPERS = (
     "low_bits",
     "make_hint",
 )
-HELPER_NAME = re.compile(r"(?:^|::)(" + "|".join(HELPERS) + r")(?:<|$|::h[0-9a-f]{16})")
+# A helper's closure is its own frame (`infinity_norm::{{closure}}`, `{closure#0}`,
+# or `closure$1` from a PDB) and counts as the helper.
+HELPER_NAME = re.compile(
+    r"(?:^|::)(" + "|".join(HELPERS) + r")(?:<[^:]*>)?(?:$|::h[0-9a-f]{16}|::\{+closure|::closure)"
+)
 HELPER_FILE = re.compile(r"fips204[^ ]*/src/(?:helpers|high_low)\.rs:")
 TOOLS = {
     "aarch64": ("aarch64-linux-gnu-objdump", "aarch64-linux-gnu-addr2line"),
