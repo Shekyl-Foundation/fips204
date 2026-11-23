@@ -72,22 +72,24 @@ pub(crate) fn decompose(gamma2: i32, r: Zq) -> (Zq, Zq) {
     // 6: else r_1 ← (r+ − r0)/(2γ2)
     // 7: end if
 
+    // `r` is secret when signing. Wrapping arithmetic keeps a conditional branch on it out of builds
+    // with `overflow-checks = true`. For `rp` in `[0, q)` nothing here wraps.
     let rp = full_reduce32(r);
     let mut xr1;
     if gamma2 & (1 << 17) == 0 {
         // ml-dsa-44
-        xr1 = (rp + 127) >> 7;
-        xr1 = (xr1 * 11275 + (1 << 23)) >> 24;
-        xr1 ^= ((43 - xr1) >> 31) & xr1;
+        xr1 = rp.wrapping_add(127) >> 7;
+        xr1 = xr1.wrapping_mul(11275).wrapping_add(1 << 23) >> 24;
+        xr1 ^= (43_i32.wrapping_sub(xr1) >> 31) & xr1;
     } else {
         // ml-dsa-65 and ml-dsa-87
-        xr1 = (rp + 127) >> 7;
-        xr1 = (xr1 * 1025 + (1 << 21)) >> 22;
+        xr1 = rp.wrapping_add(127) >> 7;
+        xr1 = xr1.wrapping_mul(1025).wrapping_add(1 << 21) >> 22;
         xr1 &= 15;
     }
 
-    let xr0 = rp - xr1 * 2 * gamma2;
-    let xr0 = xr0 - ((((Q - 1) / 2 - xr0) >> 31) & Q);
+    let xr0 = rp.wrapping_sub(xr1.wrapping_mul(2).wrapping_mul(gamma2));
+    let xr0 = xr0.wrapping_sub((((Q - 1) / 2).wrapping_sub(xr0) >> 31) & Q);
 
     // Reconstruct/validate outputs
     debug_assert_eq!(r.rem_euclid(Q), (xr1 * 2 * gamma2 + xr0).rem_euclid(Q), "Alg 36: fails");
@@ -137,7 +139,7 @@ pub(crate) fn make_hint(gamma2: i32, z: Zq, r: Zq) -> bool {
     let r1 = high_bits(gamma2, r);
 
     // 2: v1 ← HighBits(r + z)
-    let v1 = high_bits(gamma2, r + z);
+    let v1 = high_bits(gamma2, r.wrapping_add(z));
 
     // 3: return [[r1 != v1]]
     r1 != v1
@@ -200,6 +202,41 @@ mod tests {
     const GAMMA2S: [i32; 2] = [(Q - 1) / 88, (Q - 1) / 32];
 
     // m mod± α for even α: the m' ≡ m (mod α) with −α/2 < m' ≤ α/2 (section 2.3)
+    /// `decompose` as written with plain arithmetic, `None` where an overflow check would panic.
+    #[cfg(not(debug_assertions))]
+    fn checked_decompose(gamma2: i32, r: i32) -> Option<(i32, i32)> {
+        let x = r.checked_add(1 << 22)? >> 23;
+        let reduced = r.checked_sub(x.checked_mul(Q)?)?;
+        let rp = reduced.checked_add((reduced >> 31) & Q)?;
+        let mut xr1;
+        if gamma2 & (1 << 17) == 0 {
+            xr1 = rp.checked_add(127)? >> 7;
+            xr1 = xr1.checked_mul(11275)?.checked_add(1 << 23)? >> 24;
+            xr1 ^= (43_i32.checked_sub(xr1)? >> 31) & xr1;
+        } else {
+            xr1 = rp.checked_add(127)? >> 7;
+            xr1 = xr1.checked_mul(1025)?.checked_add(1 << 21)? >> 22;
+            xr1 &= 15;
+        }
+        let xr0 = rp.checked_sub(xr1.checked_mul(2)?.checked_mul(gamma2)?)?;
+        let over = ((Q - 1) / 2).checked_sub(xr0)? >> 31;
+        Some((xr1, xr0.checked_sub(over & Q)?))
+    }
+
+    // Release only: the reductions' `debug_assert!`s reject part of the range this walks.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "exhaustive over i32; run with --release -- --ignored"]
+    fn decompose_matches_checked_arithmetic_on_every_i32() {
+        for gamma2 in GAMMA2S {
+            for r in i32::MIN..=i32::MAX {
+                if let Some(expected) = checked_decompose(gamma2, r) {
+                    assert_eq!(decompose(gamma2, r), expected, "decompose({gamma2}, {r})");
+                }
+            }
+        }
+    }
+
     fn mod_pm(m: i32, alpha: i32) -> i32 {
         let r = m.rem_euclid(alpha);
         if r > alpha / 2 {
