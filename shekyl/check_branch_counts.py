@@ -16,17 +16,21 @@ A branch counts when any frame at it is one of HELPERS in fips204's
 - on x86_64, the test of the public parameter `gamma2`
   (`test $0x20000,<reg>` immediately before the jump).
 
-Anything else fails: a forward branch or an overflow-panic branch. The number
-of back-edges and gamma2 tests must equal EXPECTED exactly, so a compiler that
-changes the shape of these functions fails until a person reads the result.
-The counts are for rustc 1.94.0 and shekyl-core's example
-`ca3_pq_sign_timing`. The check fails if no helper is found (rule: a gate
-asserts its subject exists).
+Anything else fails: a forward branch or an overflow-panic branch. The caller
+states how many back-edges and gamma2 tests this binary has
+(`--expected aarch64|x86_64=BACK_EDGES,GAMMA2_TESTS`). The count is a property
+of that binary and of one rustc: another binary inlines the same helpers in
+more places, and a compiler change moves the number. This script has no count
+of its own. A pair for an architecture other than the one being read is
+accepted and not examined. The check fails if no helper is found (rule: a
+gate asserts its subject exists).
 
-Usage: check_branch_counts.py BINARY aarch64|x86_64
+Usage: check_branch_counts.py BINARY aarch64|x86_64 --expected ARCH=BACK,GAMMA2
 """
 
+import argparse
 import collections
+import os
 import re
 import subprocess
 import sys
@@ -55,9 +59,11 @@ CONDITIONAL = {
     "aarch64": re.compile(r"^(b\.[a-z]+|cbz|cbnz|tbz|tbnz)$"),
     "x86_64": re.compile(r"^j(?!mp)[a-z]+$"),
 }
-GAMMA2_TEST = re.compile(r"^\$0x20000,%[a-z0-9]+$")
-# (loop back-edges, gamma2 tests), for the build named in the docstring.
-EXPECTED = {"aarch64": (27, 0), "x86_64": (27, 4)}
+# `decompose` branches on `gamma2 & (1 << 17)`, the public parameter that
+# selects ML-DSA-44 against ML-DSA-65 and ML-DSA-87. On x86_64, rustc lowers
+# that to `test $0x20000, %reg`.
+GAMMA2_SET_BIT = 1 << 17
+GAMMA2_TEST = re.compile(rf"^\$0x{GAMMA2_SET_BIT:x},%[a-z0-9]+$")
 
 
 def instructions(binary, arch):
@@ -104,11 +110,54 @@ def frames(binary, arch, addresses):
     return result
 
 
-def main():
-    if len(sys.argv) != 3 or sys.argv[2] not in TOOLS:
-        print(__doc__)
-        return 2
-    binary, arch = sys.argv[1:]
+def expected_pair(text):
+    """`aarch64=16,0` as `("aarch64", (16, 0))`."""
+    match = re.fullmatch(r"(aarch64|x86_64)=(\d+),(\d+)", text)
+    if not match:
+        raise argparse.ArgumentTypeError(f"{text!r} is not ARCH=BACK_EDGES,GAMMA2_TESTS")
+    return match.group(1), (int(match.group(2)), int(match.group(3)))
+
+
+def self_test():
+    """The pair parser accepts one shape and refuses the others."""
+    arch, pair = expected_pair("x86_64=16,4")
+    if (arch, pair) != ("x86_64", (16, 4)):
+        print("FAIL: self-test: a well-formed pair did not parse")
+        return 1
+    for bad in ("x86_64", "x86_64=16", "arm=1,0", "x86_64=16,4,1", "x86_64=-1,0"):
+        try:
+            expected_pair(bad)
+        except argparse.ArgumentTypeError:
+            continue
+        print(f"FAIL: self-test: accepted {bad}")
+        return 1
+    print("PASS self-test")
+    return 0
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv == ["--self-test"]:
+        return self_test()
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("binary")
+    parser.add_argument("arch", choices=sorted(TOOLS))
+    parser.add_argument("--expected", type=expected_pair, action="append", required=True)
+    args = parser.parse_args(argv)
+    expected = {}
+    for arch, pair in args.expected:
+        if arch in expected:
+            parser.error(f"{arch} is stated twice")
+        expected[arch] = pair
+    if args.arch not in expected:
+        parser.error(f"no --expected pair for {args.arch}")
+    binary, arch = args.binary, args.arch
+    if not os.path.isfile(binary):
+        print(f"FAIL: no binary at {binary}")
+        return 1
     functions = instructions(binary, arch)
     branches = []
     for start, body in functions:
@@ -149,12 +198,12 @@ def main():
     if bad:
         print("FAIL: a conditional branch on a coefficient")
         return 1
-    if (backs, gammas) != EXPECTED[arch]:
-        print(f"FAIL: expected (back-edges, gamma2 tests) {EXPECTED[arch]}, found {(backs, gammas)}")
+    if (backs, gammas) != expected[arch]:
+        print(f"FAIL: expected (back-edges, gamma2 tests) {expected[arch]}, found {(backs, gammas)}")
         return 1
     print("PASS")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
