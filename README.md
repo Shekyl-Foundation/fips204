@@ -94,6 +94,25 @@ The Rust [Documentation][docs-link] lives under each **Module** corresponding to
   change in the future, but only with a minor version bump (once the major version is above 0).
 * All on-by-default features of this library are covered by `SemVer`.
 
+## Shekyl fork
+
+This branch is the Shekyl Foundation's fork of `fips204` v0.5.0. Shekyl builds with
+`overflow-checks = true`, and the fork carries what that build needs:
+
+* No conditional branch on a secret coefficient in `infinity_norm`, `decompose`, `make_hint` or
+  the secret-key encoders.
+* Range hardening of the NTT path. `inv_ntt` reduces its input below `Q` inside the function, so
+  every caller is covered, including any added later. `to_mont` reduces before it shifts.
+
+Upstream's `main` reduces the same input at its call sites instead (`492ad87`, 2026-11-20), and
+no release had that change when this was written. The two are compatible: a value already below
+`Q` stays below `Q` when it is reduced again.
+
+**When upstream releases:** rebase this fork onto that release and keep only the patches still
+needed. Keep the reduction inside `inv_ntt`. Then rerun the exhaustive tests
+(`cargo test --release --lib -- --ignored`, with overflow checks on) and
+`shekyl/check_branch_counts.py`, and move the pin in shekyl-core and the GUI wallet together.
+
 ## License
 
 Contents are licensed under either the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0)
