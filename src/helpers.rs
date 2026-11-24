@@ -155,7 +155,7 @@ pub(crate) fn infinity_norm<const ROW: usize>(w: &[R; ROW]) -> i32 {
     let mut max = 0i32;
     for row in w {
         for &element in &row.0 {
-            // `center_mod` returns a value in (-Q/2, Q/2], so neither step below can wrap.
+            // `center_mod` returns a value in `-(Q / 2)..=Q / 2`, so neither step below can wrap.
             let centered = center_mod(element);
             let sign = centered >> 31;
             let abs = (centered ^ sign).wrapping_sub(sign);
