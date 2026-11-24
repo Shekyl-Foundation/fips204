@@ -109,11 +109,11 @@ no release had that change when this was written. The two are compatible: a valu
 `Q` stays below `Q` when it is reduced again.
 
 **When upstream releases:** rebase this fork onto that release and keep only the patches still
-needed. Keep the reduction inside `inv_ntt`. Then rerun the exhaustive tests
-(`cargo test --release --lib -- --ignored`, with overflow checks on) and
-`shekyl/check_branch_counts.py` with the `--expected` pair of the binary under
-test. The script classifies the helpers and does not carry a count: each caller
-states the pair for its own binary. Move the pin in shekyl-core and the GUI wallet together.
+needed. Keep the reduction inside `inv_ntt`. Then run the commands of the
+`exhaustive` and `branch-gate` jobs in `.github/workflows/test.yml` by hand, since Actions is off
+on this fork, and record the output. `shekyl/check_branch_counts.py` classifies the helpers and
+does not carry a count: each caller states the pair for its own binary. Move the pin in
+shekyl-core and the GUI wallet together.
 
 ## License
 
