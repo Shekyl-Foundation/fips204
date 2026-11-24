@@ -1,0 +1,32 @@
+# Copyright (c) 2026, The Shekyl Foundation
+#
+# All rights reserved.
+# BSD-3-Clause
+
+# The subject of shekyl/check_branch_counts.py in this fork's own workflow: real
+# key generation, signing and verification for one parameter set, in the profile
+# Shekyl ships. Exactly one of the features is enabled per build.
+[package]
+name = "fips204-branch-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "fips204_branch_harness"
+path = "src/main.rs"
+
+[features]
+p44 = ["fips204/ml-dsa-44"]
+p65 = ["fips204/ml-dsa-65"]
+p87 = ["fips204/ml-dsa-87"]
+
+[dependencies]
+fips204 = { path = "../..", default-features = false }
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+debug = "line-tables-only"

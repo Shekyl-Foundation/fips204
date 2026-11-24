@@ -58,10 +58,14 @@ pub(crate) const fn partial_reduce64b(a: i64) -> i32 {
 // viewed as the 'number of Q' contained within `a` (with some rounding-down
 // error). So, increment these bits and then subtract off the corresponding
 // number of Q. The result is within (better than) -Q < res < Q.
+//
+// The reductions below take secret coefficients. They use wrapping arithmetic so that a build with
+// `overflow-checks = true` has no conditional branch on the value. On the input range the
+// `debug_assert!`s state nothing wraps, so the results are those of plain `+`, `-` and `*`.
 pub(crate) const fn partial_reduce32(a: i32) -> i32 {
     debug_assert!(a.abs() < 2_143_289_344, "partial_reduce32 input");
-    let x = (a + (1 << 22)) >> 23;
-    let res = a - x * Q;
+    let x = a.wrapping_add(1 << 22) >> 23;
+    let res = a.wrapping_sub(x.wrapping_mul(Q));
     debug_assert!(res.abs() < Q, "partial_reduce32 output");
     res
 }
@@ -70,7 +74,7 @@ pub(crate) const fn partial_reduce32(a: i32) -> i32 {
 pub(crate) const fn full_reduce32(a: i32) -> i32 {
     debug_assert!(a.abs() < 2_143_289_344, "full_reduce32 input");
     let x = partial_reduce32(a); // puts us within better than -Q to +Q
-    let res = x + ((x >> 31) & Q); // add Q if negative
+    let res = x.wrapping_add((x >> 31) & Q); // add Q if negative
     debug_assert!(res < Q, "full_reduce32 output");
     res
 }
@@ -88,8 +92,8 @@ pub(crate) const fn bit_length(x: i32) -> usize { x.ilog2() as usize + 1 }
 pub(crate) fn center_mod(m: i32) -> i32 {
     debug_assert!(m.abs() < 2_143_289_344, "center_mod input"); // for clarity; caught in full_reduce32
     let t = full_reduce32(m);
-    let over2 = (Q / 2) - t; // check if t is larger than Q/2
-    let res = t - ((over2 >> 31) & Q); // sub Q if over2 is negative
+    let over2 = (Q / 2).wrapping_sub(t); // check if t is larger than Q/2
+    let res = t.wrapping_sub((over2 >> 31) & Q); // sub Q if over2 is negative
     debug_assert_eq!(m.rem_euclid(Q), res.rem_euclid(Q), "center_mod output");
     res
 }
@@ -130,21 +134,36 @@ pub(crate) fn add_vector_ntt<const K: usize>(v_hat: &[R; K], w_hat: &[R; K]) -> 
 
 #[allow(clippy::cast_possible_truncation)] // as i32
 pub(crate) fn to_mont<const L: usize>(vec_a: &[T; L]) -> [T; L] {
-    core::array::from_fn(|l| {
-        T(core::array::from_fn(|n| partial_reduce64(i64::from(vec_a[l].0[n]) << 32)))
-    })
+    core::array::from_fn(|l| T(core::array::from_fn(|n| to_mont_coefficient(vec_a[l].0[n]))))
 }
 
 
+/// One coefficient into Montgomery form.
+///
+/// An NTT output is up to `|w_0| + 8 * Q` in magnitude, and with `|w_0| <= 2^19` that exceeds the
+/// input range of `partial_reduce64`. So it is first reduced below `Q`. The result is congruent
+/// to the same value and below `2 * Q`.
+fn to_mont_coefficient(a: i32) -> i32 { partial_reduce64(i64::from(partial_reduce32(a)) << 32) }
+
+
+/// The largest absolute value of the centered coefficients of `w`.
+///
+/// Signing passes `z`, `r0` and `c*t0`. Of these, only an accepted `z` appears in the signature:
+/// `r0`, `c*t0` and a rejected `z` are secret. So the absolute value and the maximum are masks,
+/// with no conditional branch on a coefficient.
 pub(crate) fn infinity_norm<const ROW: usize>(w: &[R; ROW]) -> i32 {
-    w.iter()
-        .flat_map(|row| row.0)
-        .map(|element| center_mod(element).abs())
-        // .max() might be non-CT on some targets. infinity_norm() is used in signature generation and
-        // verification; the values are ultimately revealed in the signature, so worst case is leaking
-        // which vector element failed. Not a problem since the whole thing is permutation-agnostic
-        .max()
-        .expect("infinity norm fails")
+    let mut max = 0i32;
+    for row in w {
+        for &element in &row.0 {
+            // `center_mod` returns a value in `-(Q / 2)..=Q / 2`, so neither step below can wrap.
+            let centered = center_mod(element);
+            let sign = centered >> 31;
+            let abs = (centered ^ sign).wrapping_sub(sign);
+            let max_is_less = max.wrapping_sub(abs) >> 31;
+            max ^= (max ^ abs) & max_is_less;
+        }
+    }
+    max
 }
 
 
@@ -188,6 +207,133 @@ pub(crate) static ZETA_TABLE_MONT: [i32; 256] = gen_zeta_table_mont();
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The norm as an iterator maximum, the form the masked loop replaces.
+    fn reference_norm<const ROW: usize>(w: &[R; ROW]) -> i32 {
+        w.iter()
+            .flat_map(|row| row.0)
+            .map(|element| center_mod(element).abs())
+            .max()
+            .expect("non-empty")
+    }
+
+    #[test]
+    fn infinity_norm_matches_the_iterator_maximum() {
+        const HALF: i32 = Q / 2;
+        const EDGES: [i32; 12] = [
+            0,
+            1,
+            -1,
+            HALF,
+            -HALF,
+            HALF + 1,
+            -HALF - 1,
+            Q - 1,
+            Q,
+            Q + 1,
+            2_143_289_343,
+            -2_143_289_343,
+        ];
+        let filled = |value: i32| [R([value; 256]), R([value; 256])];
+        let check = |w: &[R; 2]| assert_eq!(infinity_norm(w), reference_norm(w));
+
+        // All zeros, and every edge value everywhere (ties across all 512 positions).
+        check(&filled(0));
+        for edge in EDGES {
+            check(&filled(edge));
+        }
+        // A single nonzero coefficient, first, last and at the row boundary.
+        for edge in EDGES {
+            for (row, n) in [(0, 0), (1, 255), (0, 255), (1, 0), (0, 128)] {
+                let mut w = filled(0);
+                w[row].0[n] = edge;
+                check(&w);
+            }
+        }
+        // The largest coefficient first and last, over smaller values, and tied at both ends.
+        for (a, b) in [(HALF, 5), (-HALF, 5), (HALF, -HALF), (7, 7)] {
+            let mut w = filled(b);
+            w[0].0[0] = a;
+            check(&w);
+            let mut w = filled(b);
+            w[1].0[255] = a;
+            check(&w);
+            w[0].0[0] = a;
+            check(&w);
+        }
+        // Generated arrays over the whole input range (xorshift64, fixed start).
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..2_000 {
+            let mut w = filled(0);
+            for coefficient in w.iter_mut().flat_map(|row| row.0.iter_mut()) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                #[allow(clippy::cast_possible_truncation)]
+                let value = (state >> 32) as i32;
+                *coefficient = value / 2;
+            }
+            check(&w);
+        }
+    }
+
+    // The secret-key encoders centred with a branch; `center_mod` does it with a mask.
+    #[test]
+    fn center_mod_centres_every_canonical_coefficient() {
+        for x in 0..Q {
+            assert_eq!(center_mod(x), if x > Q / 2 { x - Q } else { x }, "center_mod({x})");
+        }
+    }
+
+    // Every value an NTT output can hold: |w_0| <= 2^19, plus Q per layer, and more.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "walks every NTT output; run with --release -- --ignored"]
+    fn to_mont_coefficient_is_in_range_on_every_ntt_output() {
+        let limit = (1 << 19) + 9 * Q;
+        for a in -limit..=limit {
+            let result = to_mont_coefficient(a);
+            assert!(result.abs() < 2 * Q, "to_mont({a}) = {result}");
+            let expected = (i64::from(a) << 32).rem_euclid(i64::from(Q));
+            assert_eq!(i64::from(result).rem_euclid(i64::from(Q)), expected, "to_mont({a})");
+        }
+    }
+
+    /// `center_mod` as written with plain arithmetic, `None` where an overflow check would panic.
+    #[cfg(not(debug_assertions))]
+    fn checked_center_mod(m: i32) -> Option<i32> {
+        let x = m.checked_add(1 << 22)? >> 23;
+        let res = m.checked_sub(x.checked_mul(Q)?)?;
+        let t = res.checked_add((res >> 31) & Q)?;
+        let over2 = (Q / 2).checked_sub(t)?;
+        t.checked_sub((over2 >> 31) & Q)
+    }
+
+    // Release only: the reductions' `debug_assert!`s reject part of the range this walks.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "exhaustive over i32; run with --release -- --ignored"]
+    fn center_mod_matches_checked_arithmetic_on_every_i32() {
+        for m in i32::MIN..=i32::MAX {
+            if let Some(expected) = checked_center_mod(m) {
+                assert_eq!(center_mod(m), expected, "center_mod({m})");
+            }
+        }
+    }
+
+    // Every value `center_mod` can return, through the norm's own absolute value.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "walks every centered value; run with --release -- --ignored"]
+    fn infinity_norm_is_the_absolute_value_of_every_centered_value() {
+        for value in -(Q / 2)..=(Q / 2) {
+            let mut w = [R([0; 256])];
+            #[allow(clippy::cast_sign_loss)]
+            let at = (value & 0xFF) as usize;
+            w[0].0[at] = value;
+            assert_eq!(infinity_norm(&w), checked_center_mod(value).expect("in range").abs());
+        }
+    }
 
     #[test]
     fn check_zeta() {
